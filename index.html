@@ -1,0 +1,1327 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jogo de Pipa Multiplayer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #87CEEB, #1E90FF);
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
+        }
+        #startScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+        }
+        #startScreen h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 1.2em;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: background 0.3s, transform 0.2s;
+        }
+        button:hover {
+            background: #45a049;
+            transform: scale(1.05);
+        }
+        #nameInput {
+            padding: 10px;
+            font-size: 1em;
+            width: 200px;
+            margin-top: 20px;
+            border-radius: 5px;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui">
+            <div id="score">Pipas cortadas: 0</div>
+            <div id="players"></div>
+        </div>
+        <div id="startScreen">
+            <h1>JOGO DE PIPA</h1>
+            <p>Use as setas para mover sua pipa. Tente cortar as linhas dos outros jogadores!</p>
+            <input id="nameInput" type="text" placeholder="Seu nome" maxlength="10">
+            <button id="startButton">Começar a Jogar</button>
+        </div>
+    </div>
+
+    <script>
+        // Configurações do jogo
+        const GAME = {
+            pipas: [], // Array com todas as pipas
+            players: {}, // Objeto para armazenar informações dos jogadores
+            score: 0,
+            running: false,
+            windSpeed: 0.5,
+            windDirection: 0,
+            playerId: 'player_' + Math.floor(Math.random() * 100000),
+            gameEnding: false,
+            gravity: 0.07,  // Constante de gravidade
+            windParticles: [], // Partículas para visualização do vento
+            maxWindParticles: 100, // Número máximo de partículas de vento
+            clouds: [], // Array para armazenar nuvens
+            maxClouds: 12 // Número máximo de nuvens na tela
+        };
+
+        // Elementos DOM
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startScreen = document.getElementById('startScreen');
+        const startButton = document.getElementById('startButton');
+        const nameInput = document.getElementById('nameInput');
+        const scoreDisplay = document.getElementById('score');
+        const playersDisplay = document.getElementById('players');
+
+        // Ajustar tamanho do canvas
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Classe para pipa
+        class Pipa {
+            constructor(id, name, x, y, color, isPlayer = false) {
+                this.id = id;
+                this.name = name;
+                this.x = x;
+                this.y = y;
+                this.width = 40;
+                this.height = 40;
+                this.color = color;
+                this.lineColor = color;
+                this.lineWidth = 2;
+                this.speed = 3;
+                this.linePath = [];
+                this.maxLinePoints = 100;
+                this.isPlayer = isPlayer;
+                this.isAlive = true;
+                this.angle = 0;
+                this.moveX = 0;
+                this.moveY = 0;
+                
+                // Rastrear mudanças de direção para efeito de zigzag
+                this.lastDirectionX = 0; // -1: esquerda, 1: direita, 0: nenhum
+                this.directionChanges = 0; // Contador de mudanças de direção recentes
+                this.lastDirectionChangeTime = 0; // Tempo da última mudança de direção
+                this.zigzagLift = 0; // Força de elevação extra de movimentos zigzag
+                
+                // Adicionar ponto inicial da linha
+                this.addLinePoint(x, y + this.height/2);
+            }
+            
+            addLinePoint(x, y) {
+                this.linePath.push({x, y});
+                if (this.linePath.length > this.maxLinePoints) {
+                    this.linePath.shift();
+                }
+            }
+            
+            update() {
+                // Comportamento diferente baseado no estado da pipa
+                if (this.isAlive) {
+                    // Detectar mudanças de direção horizontal para efeito de zigzag
+                    let currentDirectionX = 0;
+                    if (this.moveX > 0.1) currentDirectionX = 1;
+                    else if (this.moveX < -0.1) currentDirectionX = -1;
+                    
+                    // Detectar se houve uma mudança real de direção
+                    if (currentDirectionX !== 0 && this.lastDirectionX !== 0 && 
+                        currentDirectionX !== this.lastDirectionX) {
+                        // Verificar se a mudança foi recente (dentro de um segundo)
+                        const now = Date.now();
+                        if (now - this.lastDirectionChangeTime < 1000) {
+                            // Incrementar contador de mudanças rápidas de direção (limitado a 5)
+                            this.directionChanges = Math.min(5, this.directionChanges + 1);
+                        } else {
+                            // Reiniciar contagem se a última mudança foi há muito tempo
+                            this.directionChanges = 1;
+                        }
+                        this.lastDirectionChangeTime = now;
+                    }
+                    
+                    // Atualizar direção horizontal atual
+                    if (currentDirectionX !== 0) {
+                        this.lastDirectionX = currentDirectionX;
+                    }
+                    
+                    // Calcular efeito de elevação baseado em zigzag (apenas se movendo para cima)
+                    if (this.moveY < 0 && this.directionChanges > 1) {
+                        // Efeito de elevação proporcional ao número de mudanças rápidas de direção
+                        // e à velocidade do movimento para cima
+                        this.zigzagLift = Math.min(1.5, this.directionChanges * 0.2) * Math.abs(this.moveY) * 0.5;
+                    } else {
+                        // Reduzir gradualmente o efeito quando não estiver em zigzag
+                        this.zigzagLift *= 0.9;
+                    }
+                    
+                    // Aplicar movimento controlado pelo jogador ou IA
+                    this.x += this.moveX;
+                    this.y += this.moveY;
+                    
+                    // Resistência ao ar (desacelerar naturalmente)
+                    this.moveX *= 0.98;
+                    this.moveY *= 0.98;
+                    
+                    // Calcular efeito da altitude na gravidade (gravidade mais forte quando próximo ao topo)
+                    const heightFactor = Math.max(0.5, Math.min(2.0, 3.0 - (this.y / canvas.height) * 2.5));
+                    
+                    // Gravidade com ajuste baseado na altura
+                    // Reduzir gravidade pelo efeito de zigzag
+                    const effectiveGravity = GAME.gravity * 0.2 * heightFactor * (1 - this.zigzagLift);
+                    this.moveY += effectiveGravity;
+                    
+                    // Aplicar efeito de impulso direto para cima do zigzag
+                    if (this.zigzagLift > 0.05) {
+                        // Aumentar o multiplicador para um efeito mais forte
+                        this.moveY -= this.zigzagLift * 0.12;
+                    }
+                    
+                    // Efeito de elevação ao mover-se para frente (física de pipa)
+                    if (Math.abs(this.moveX) > 0.5) {
+                        // Reduzir efeito de elevação quando perto do topo
+                        const liftReduction = Math.min(1, this.y / 150);
+                        this.moveY -= Math.abs(this.moveX) * 0.04 * liftReduction;
+                    }
+                    
+                    // Aplicar vento com efeito baseado na orientação da pipa
+                    const windAngle = Math.atan2(this.moveY, this.moveX);
+                    const windAlignment = Math.abs(Math.cos(windAngle - GAME.windDirection));
+                    
+                    // Calcular efeito do vento com atenuação baseada na altura
+                    let windEffect = GAME.windSpeed * (0.8 + windAlignment);
+                    
+                    // Reduzir componente vertical do vento quando próximo ao topo da tela
+                    const verticalWindScale = Math.min(1, this.y / 200); 
+                    const horizontalWind = Math.cos(GAME.windDirection) * windEffect;
+                    
+                    // Direcionar o vento mais horizontalmente quando no topo
+                    let verticalWind = Math.sin(GAME.windDirection) * windEffect;
+                    
+                    // Se o vento estiver empurrando para cima e a pipa estiver perto do topo, reduzir efeito
+                    if (verticalWind < 0 && this.y < 150) {
+                        verticalWind *= verticalWindScale;
+                    }
+                    
+                    this.x += horizontalWind;
+                    this.y += verticalWind;
+                    
+                    // Limitar às bordas do canvas
+                    this.x = Math.max(20, Math.min(canvas.width - 20, this.x));
+                    this.y = Math.max(50, Math.min(canvas.height - 50, this.y));
+                    
+                    // Se for a pipa do jogador, atualizar a posição da mão
+                    if (this.isPlayer) {
+                        this.handX = this.x;
+                    }
+                } else {
+                    // Pipa cortada: aplicar gravidade mais forte e efeitos de queda
+                    this.moveY += GAME.gravity * 2; // Gravidade mais forte para queda
+                    
+                    // Aplicar resistência do ar durante a queda
+                    this.moveX *= 0.98;
+                    this.moveY *= 0.98;
+                    
+                    // Movimento de oscilação durante a queda
+                    this.moveX += Math.cos(Date.now() * 0.005) * 0.1;
+                    
+                    // Aplicar vento durante a queda
+                    this.x += Math.cos(GAME.windDirection) * GAME.windSpeed * 0.5;
+                    this.y += this.moveY;
+                    
+                    // Se sair da tela inferior, remover definitivamente
+                    if (this.y > canvas.height + 100) {
+                        const index = GAME.pipas.findIndex(p => p.id === this.id);
+                        if (index !== -1) {
+                            GAME.pipas.splice(index, 1);
+                            return;
+                        }
+                    }
+                }
+                
+                // Adicionar novo ponto da linha
+                this.addLinePoint(this.x, this.y + this.height/2);
+                
+                // Verificar colisões com outras linhas
+                if (this.isAlive) {
+                    this.checkLineCollisions();
+                }
+            }
+            
+            checkLineCollisions() {
+                // Não verificar colisão se não tiver pelo menos 3 pontos
+                if (this.linePath.length < 3) return;
+                
+                // Ponto atual da pipa
+                const currentPoint = {x: this.x, y: this.y + this.height/2};
+                
+                // Verificar colisão com linhas de outras pipas
+                GAME.pipas.forEach(pipa => {
+                    if (pipa.id === this.id || !pipa.isAlive) return; // Não verificar com a própria pipa ou com pipas abatidas
+                    
+                    // Verificar colisão com os segmentos de linha da outra pipa
+                    for (let i = 1; i < pipa.linePath.length; i++) {
+                        const pt1 = pipa.linePath[i-1];
+                        const pt2 = pipa.linePath[i];
+                        
+                        // Verificar se a pipa atual cruzou o segmento de linha
+                        if (this.lineSegmentIntersection(
+                            this.linePath[this.linePath.length-2], 
+                            currentPoint, 
+                            pt1, 
+                            pt2
+                        )) {
+                            console.log("Colisão! Pipa " + this.name + " colidiu com a linha de " + pipa.name);
+                            
+                            // A pipa atacante ganha um ponto e a atacada é "cortada"
+                            pipa.isAlive = false;
+                            
+                            // Se for o jogador que cortou, aumentar pontuação
+                            if (this.isPlayer) {
+                                GAME.score++;
+                                scoreDisplay.textContent = `Pipas cortadas: ${GAME.score}`;
+                            }
+                            
+                            return; // Sair do loop após encontrar uma colisão
+                        }
+                    }
+                });
+            }
+            
+            // Verificar se dois segmentos de linha se cruzam (algoritmo usado para detecção de colisão)
+            lineSegmentIntersection(p1, p2, p3, p4) {
+                const d1 = this.direction(p3, p4, p1);
+                const d2 = this.direction(p3, p4, p2);
+                const d3 = this.direction(p1, p2, p3);
+                const d4 = this.direction(p1, p2, p4);
+                
+                // Verificar se os segmentos se cruzam
+                if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && 
+                    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+                    return true;
+                }
+                
+                // Verificar casos especiais (pontos colineares)
+                if (d1 === 0 && this.onSegment(p3, p4, p1)) return true;
+                if (d2 === 0 && this.onSegment(p3, p4, p2)) return true;
+                if (d3 === 0 && this.onSegment(p1, p2, p3)) return true;
+                if (d4 === 0 && this.onSegment(p1, p2, p4)) return true;
+                
+                return false;
+            }
+            
+            direction(p1, p2, p3) {
+                return (p3.x - p1.x) * (p2.y - p1.y) - (p2.x - p1.x) * (p3.y - p1.y);
+            }
+            
+            onSegment(p1, p2, p3) {
+                return p3.x >= Math.min(p1.x, p2.x) && p3.x <= Math.max(p1.x, p2.x) &&
+                       p3.y >= Math.min(p1.y, p2.y) && p3.y <= Math.max(p1.y, p2.y);
+            }
+            
+            draw() {
+                if (!this.isAlive) {
+                    // Se a pipa estiver "cortada", desenhar apenas a linha caindo
+                    this.drawLine(0.3); // Desenhar linha com opacidade reduzida
+                    return;
+                }
+                
+                // Desenhar linha da pipa
+                this.drawLine(1.0);
+                
+                // Desenhar a pipa
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // Calcular ângulo baseado na direção do movimento
+                let angle = 0;
+                if (this.moveX !== 0 || this.moveY !== 0) {
+                    angle = Math.atan2(this.moveY, this.moveX);
+                }
+                ctx.rotate(angle);
+                
+                // Verificar se o efeito de zigzag está ativo (para indicador visual)
+                const zigzagActive = this.zigzagLift > 0.1;
+                
+                // Desenhar a pipa (formato losango)
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.moveTo(0, -this.height/2); // Topo
+                ctx.lineTo(this.width/2, 0);   // Direita
+                ctx.lineTo(0, this.height/2);  // Base
+                ctx.lineTo(-this.width/2, 0);  // Esquerda
+                ctx.closePath();
+                ctx.fill();
+                
+                // Desenhar detalhes da pipa
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                
+                // Desenhar cruzetas
+                ctx.beginPath();
+                ctx.moveTo(-this.width/2, 0);
+                ctx.lineTo(this.width/2, 0);
+                ctx.moveTo(0, -this.height/2);
+                ctx.lineTo(0, this.height/2);
+                ctx.stroke();
+                
+                // Adicionar nome do jogador
+                if (this.isPlayer) {
+                    ctx.fillStyle = 'white';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(this.name, 0, -this.height/2 - 10);
+                }
+                
+                // Adicionar indicador visual de efeito zigzag se ativo
+                if (zigzagActive && this.isPlayer) {
+                    // Desenhar pequenas trilhas de vento ao redor da pipa
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+                    ctx.lineWidth = 2;
+                    
+                    // Força do efeito visual (baseado na força do zigzag)
+                    const effectStrength = 3 + this.zigzagLift * 10;
+                    
+                    // Desenhar linhas de vento em padrão zigzag
+                    ctx.beginPath();
+                    for (let i = 0; i < 8; i++) {
+                        const angle = (i / 8) * Math.PI * 2;
+                        const x1 = Math.cos(angle) * (this.width/1.7);
+                        const y1 = Math.sin(angle) * (this.height/1.7);
+                        const x2 = Math.cos(angle) * (this.width/1.7 + effectStrength);
+                        const y2 = Math.sin(angle) * (this.height/1.7 + effectStrength);
+                        
+                        // Desenhar linha de vento com efeito zigzag
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                    }
+                    ctx.stroke();
+                    
+                    // Adicionar efeito de brilho
+                    ctx.fillStyle = `rgba(255, 255, 255, ${this.zigzagLift * 0.3})`;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, this.width/2 + 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                
+                ctx.restore();
+            }
+            
+            drawLine(opacity = 1.0) {
+                if (this.linePath.length < 2) return;
+                
+                // Obter seed baseado no ID e timestamp para manter consistência na mesma linha
+                const pipaId = parseInt(this.id.replace(/[^\d]/g, '')) || 0;
+                const time = Date.now() * 0.0005; // Base time factor
+                
+                // Fator de elasticidade - aumentar para mais elasticidade
+                const elasticity = this.isAlive ? 0.2 : 0.1; // Menos elasticidade se a pipa estiver cortada
+                
+                // Comprimento de onda para oscilações - variado para cada pipa
+                const wavelength = 0.4 + (pipaId % 5) * 0.1;
+                
+                // Aplicar efeito de vento dinâmico
+                const windEffect = GAME.windSpeed * 5; // Amplificar efeito do vento
+                
+                ctx.beginPath();
+                ctx.moveTo(this.linePath[0].x, this.linePath[0].y);
+                
+                // Desenhar segmentos de linha com efeito de elasticidade
+                for (let i = 1; i < this.linePath.length - 2; i++) {
+                    const p0 = this.linePath[i-1];
+                    const p1 = this.linePath[i];
+                    const p2 = this.linePath[i+1];
+                    const p3 = this.linePath[i+2] || p2;
+                    
+                    // Fator de tensão mais baixo = mais elasticidade (0.1-0.2 para muito elástico)
+                    const tension = 0.15;
+                    
+                    // Segmento como porcentagem da linha total
+                    const segmentPos = i / this.linePath.length;
+                    
+                    // Efeito de onda principal - amplitude maior para mais movimento
+                    const waveAmplitude = windEffect * (1 + elasticity * 2);
+                    
+                    // Ondas complexas - combinar várias frequências para movimento mais natural
+                    // Ondas primárias - movimento amplo da linha
+                    const primaryWaveX = Math.sin(time + segmentPos * wavelength * 5 + pipaId * 0.3) * waveAmplitude;
+                    const primaryWaveY = Math.cos(time * 0.8 + segmentPos * wavelength * 4 + pipaId * 0.2) * waveAmplitude;
+                    
+                    // Ondas secundárias - pequenos balanços na linha
+                    const secondaryWaveX = Math.sin(time * 2 + segmentPos * 10) * (waveAmplitude * 0.3);
+                    const secondaryWaveY = Math.cos(time * 1.7 + segmentPos * 8) * (waveAmplitude * 0.3);
+                    
+                    // Efeito de elasticidade - maior no meio da linha
+                    const elasticFactor = Math.sin(segmentPos * Math.PI) * elasticity * 35;
+                    
+                    // Soma total dos deslocamentos das ondas
+                    const totalWaveX = primaryWaveX + secondaryWaveX;
+                    const totalWaveY = primaryWaveY + secondaryWaveY;
+                    
+                    // Calcular pontos de controle para a curva de Bezier
+                    // Aumentar os multiplicadores para mais exagero nas curvas
+                    const cp1x = p1.x + ((p2.x - p0.x) * tension * 1.5) + totalWaveX + (p2.x - p1.x) * elasticFactor;
+                    const cp1y = p1.y + ((p2.y - p0.y) * tension * 1.5) + totalWaveY + (p2.y - p1.y) * elasticFactor;
+                    
+                    const cp2x = p2.x - ((p3.x - p1.x) * tension * 1.5) + totalWaveY * 0.8 - (p3.x - p2.x) * elasticFactor;
+                    const cp2y = p2.y - ((p3.y - p1.y) * tension * 1.5) - totalWaveX * 0.8 - (p3.y - p2.y) * elasticFactor;
+                    
+                    // Desenhar curva com controle exagerado para mais elasticidade
+                    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+                }
+                
+                // Conectar os últimos pontos se necessário
+                if (this.linePath.length <= 3) {
+                    // Para linhas curtas, usar uma curva simples
+                    for (let i = 1; i < this.linePath.length; i++) {
+                        const prev = this.linePath[i-1];
+                        const curr = this.linePath[i];
+                        
+                        // Pequena ondulação natural baseada no tempo
+                        const waveX = Math.sin(time * 2 + i * 0.1 + pipaId) * (GAME.windSpeed * 2);
+                        const waveY = Math.cos(time * 1.5 + i * 0.2 + pipaId) * (GAME.windSpeed * 2);
+                        
+                        const controlX = (prev.x + curr.x) / 2 + waveX;
+                        const controlY = (prev.y + curr.y) / 2 + waveY;
+                        
+                        ctx.quadraticCurveTo(controlX, controlY, curr.x, curr.y);
+                    }
+                }
+                
+                ctx.strokeStyle = this.lineColor;
+                ctx.globalAlpha = opacity;
+                ctx.lineWidth = this.lineWidth;
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        // Inicializar controles do jogador
+        const keys = {};
+        window.addEventListener('keydown', e => {
+            keys[e.key] = true;
+        });
+        window.addEventListener('keyup', e => {
+            keys[e.key] = false;
+        });
+
+        // Verificar se uma posição está a uma distância mínima de todas as pipas existentes
+        function isValidPosition(x, y, minDistance) {
+            for (let i = 0; i < GAME.pipas.length; i++) {
+                const dx = GAME.pipas[i].x - x;
+                const dy = GAME.pipas[i].y - y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < minDistance) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Encontrar uma posição válida para uma nova pipa
+        function findValidPosition(minDistance) {
+            let x, y;
+            let attempts = 0;
+            const maxAttempts = 150; // Aumentar o número máximo de tentativas
+            
+            do {
+                // Limitar área de spawn um pouco mais dentro do canvas para evitar pipas nas bordas
+                x = Math.random() * (canvas.width - 200) + 100;
+                y = Math.random() * (canvas.height - 200) + 100;
+                attempts++;
+                
+                if (attempts > maxAttempts) {
+                    console.warn("Não foi possível encontrar posição com distância mínima após muitas tentativas");
+                    
+                    // Se não encontrar posição após todas as tentativas, usar a última com distância maior possível
+                    let bestPosition = { x, y };
+                    let maxMinDistance = 0;
+                    
+                    // Testar algumas posições aleatórias adicionais e escolher a melhor
+                    for (let i = 0; i < 20; i++) {
+                        const testX = Math.random() * (canvas.width - 200) + 100;
+                        const testY = Math.random() * (canvas.height - 200) + 100;
+                        let minDist = Number.MAX_VALUE;
+                        
+                        // Encontrar distância mínima desta posição a qualquer pipa existente
+                        for (let j = 0; j < GAME.pipas.length; j++) {
+                            const dx = GAME.pipas[j].x - testX;
+                            const dy = GAME.pipas[j].y - testY;
+                            const dist = Math.sqrt(dx*dx + dy*dy);
+                            minDist = Math.min(minDist, dist);
+                        }
+                        
+                        // Se esta posição for melhor que a melhor anterior, atualizá-la
+                        if (minDist > maxMinDistance) {
+                            maxMinDistance = minDist;
+                            bestPosition = { x: testX, y: testY };
+                        }
+                    }
+                    
+                    return bestPosition;
+                }
+                
+                // Verificar que a posição está a pelo menos minDistance de todas as pipas existentes
+            } while (!isValidPosition(x, y, minDistance));
+            
+            return { x, y };
+        }
+
+        // Criar pipa do jogador
+        function createPlayerPipa(name) {
+            const colors = ['#FF5733', '#33FF57', '#3357FF', '#F3FF33', '#FF33F3', '#33FFF3'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            
+            // Iniciar com uma posição mais distante (200px)
+            const position = findValidPosition(200);
+            
+            const playerPipa = new Pipa(
+                GAME.playerId,
+                name,
+                position.x,
+                position.y,
+                randomColor,
+                true
+            );
+            
+            GAME.pipas.push(playerPipa);
+            GAME.players[GAME.playerId] = {
+                name: name,
+                color: randomColor,
+                score: 0
+            };
+            
+            return playerPipa;
+        }
+
+        // Criar pipas controladas pelo computador
+        function createAIPipas(count) {
+            const colors = ['#FF5733', '#33FF57', '#3357FF', '#F3FF33', '#FF33F3', '#33FFF3'];
+            
+            for (let i = 0; i < count; i++) {
+                const id = 'ai_' + i;
+                const name = 'Rival ' + (i + 1);
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                
+                // Usar a mesma distância mínima para todas as pipas (200px)
+                const position = findValidPosition(200);
+                
+                const aiPipa = new Pipa(
+                    id,
+                    name,
+                    position.x,
+                    position.y,
+                    color,
+                    false
+                );
+                
+                GAME.pipas.push(aiPipa);
+                GAME.players[id] = {
+                    name: name,
+                    color: color,
+                    score: 0
+                };
+            }
+        }
+
+        // Atualizar movimento das pipas AI
+        function updateAIPipas() {
+            GAME.pipas.forEach(pipa => {
+                if (!pipa.isPlayer && pipa.isAlive) {
+                    // Valores únicos por pipa baseados no ID para personalidade
+                    const pipaId = parseInt(pipa.id.replace(/[^\d]/g, '')) || 0;
+                    const aggressiveness = 0.5 + (pipaId % 5) * 0.1; // Quão agressivamente persegue outras pipas
+                    const randomness = 0.3 + (pipaId % 3) * 0.1;     // Quão aleatório é seu movimento
+                    const edgeAvoidance = 150 + (pipaId % 3) * 20;   // Distância para começar a evitar bordas
+                    
+                    // Verificar proximidade com bordas e reagir
+                    let edgeForce = {x: 0, y: 0};
+                    
+                    // Distância das bordas
+                    const leftDist = pipa.x - 20;
+                    const rightDist = canvas.width - 20 - pipa.x;
+                    const topDist = pipa.y - 50;
+                    const bottomDist = canvas.height - 50 - pipa.y;
+                    
+                    // Aplicar força para afastar-se das bordas quando próximo
+                    if (leftDist < edgeAvoidance) {
+                        edgeForce.x += (1 - leftDist/edgeAvoidance) * pipa.speed * 0.2;
+                    }
+                    if (rightDist < edgeAvoidance) {
+                        edgeForce.x -= (1 - rightDist/edgeAvoidance) * pipa.speed * 0.2;
+                    }
+                    if (topDist < edgeAvoidance) {
+                        edgeForce.y += (1 - topDist/edgeAvoidance) * pipa.speed * 0.2;
+                    }
+                    if (bottomDist < edgeAvoidance) {
+                        edgeForce.y -= (1 - bottomDist/edgeAvoidance) * pipa.speed * 0.2;
+                    }
+                    
+                    // Detectar e corrigir situação de "preso na borda"
+                    const isStuck = (leftDist < 30 || rightDist < 30 || topDist < 30 || bottomDist < 30) &&
+                                    Math.abs(pipa.moveX) < 0.2 && Math.abs(pipa.moveY) < 0.2;
+                    
+                    if (isStuck) {
+                        // Movimento forte para longe da borda
+                        if (leftDist < 30) edgeForce.x += pipa.speed * 1.5;
+                        if (rightDist < 30) edgeForce.x -= pipa.speed * 1.5;
+                        if (topDist < 30) edgeForce.y += pipa.speed * 1.5;
+                        if (bottomDist < 30) edgeForce.y -= pipa.speed * 1.5;
+                        
+                        // Adicionar um pequeno movimento aleatório para quebrar padrões cíclicos
+                        edgeForce.x += (Math.random() - 0.5) * pipa.speed;
+                        edgeForce.y += (Math.random() - 0.5) * pipa.speed;
+                    }
+                    
+                    // Comportamento normal quando não está preso
+                    if (!isStuck) {
+                        // Movimento aleatório ocasional (cada pipa tem um padrão diferente)
+                        if (Math.random() < 0.015 * randomness) {
+                            // Mover para uma direção com alguma correlação com a direção atual
+                            // (para movimento mais suave e realista)
+                            pipa.moveX = pipa.moveX * 0.5 + (Math.random() - 0.5) * pipa.speed * 1.5;
+                            pipa.moveY = pipa.moveY * 0.5 + (Math.random() - 0.5) * pipa.speed * 1.5;
+                        }
+                        
+                        // Tentar perseguir pipas próximas com comportamento mais inteligente
+                        const nearestPipa = findNearestPipa(pipa);
+                        if (nearestPipa && Math.random() < 0.08 * aggressiveness) {
+                            const dx = nearestPipa.x - pipa.x;
+                            const dy = nearestPipa.y - pipa.y;
+                            const dist = Math.sqrt(dx*dx + dy*dy);
+                            
+                            if (dist < 400) { // Raio de perseguição aumentado
+                                // Movimento em direção ao alvo com suavidade proporcional à distância
+                                const chaseStrength = Math.min(1, 300 / dist) * pipa.speed * 0.12;
+                                pipa.moveX += dx / dist * chaseStrength;
+                                pipa.moveY += dy / dist * chaseStrength;
+                                
+                                // Tentar posicionar-se para cortar a linha do outro
+                                // Prever movimento e ir para um ponto à frente
+                                if (dist < 150 && nearestPipa.moveX !== 0 && nearestPipa.moveY !== 0) {
+                                    const interceptX = nearestPipa.x + nearestPipa.moveX * 5;
+                                    const interceptY = nearestPipa.y + nearestPipa.moveY * 5;
+                                    
+                                    pipa.moveX += (interceptX - pipa.x) / dist * chaseStrength * 0.5;
+                                    pipa.moveY += (interceptY - pipa.y) / dist * chaseStrength * 0.5;
+                                }
+                            }
+                        }
+                        
+                        // Às vezes seguir o vento para ganhar velocidade
+                        if (Math.random() < 0.03) {
+                            pipa.moveX += Math.cos(GAME.windDirection) * GAME.windSpeed * 0.5;
+                            pipa.moveY += Math.sin(GAME.windDirection) * GAME.windSpeed * 0.5;
+                        }
+                    }
+                    
+                    // Aplicar força de afastamento das bordas
+                    pipa.moveX += edgeForce.x;
+                    pipa.moveY += edgeForce.y;
+                    
+                    // Limitar velocidade máxima
+                    const maxSpeed = pipa.speed * 1.2;
+                    const currentSpeed = Math.sqrt(pipa.moveX * pipa.moveX + pipa.moveY * pipa.moveY);
+                    if (currentSpeed > maxSpeed) {
+                        pipa.moveX = (pipa.moveX / currentSpeed) * maxSpeed;
+                        pipa.moveY = (pipa.moveY / currentSpeed) * maxSpeed;
+                    }
+                }
+            });
+        }
+
+        // Encontrar a pipa mais próxima
+        function findNearestPipa(currentPipa) {
+            let nearest = null;
+            let minDist = Infinity;
+            
+            GAME.pipas.forEach(pipa => {
+                if (pipa.id !== currentPipa.id && pipa.isAlive) {
+                    const dx = pipa.x - currentPipa.x;
+                    const dy = pipa.y - currentPipa.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearest = pipa;
+                    }
+                }
+            });
+            
+            return nearest;
+        }
+
+        // Atualizar a direção do vento aleatoriamente
+        function updateWind() {
+            // Chance de mudar a direção do vento (mudanças mais suaves)
+            if (Math.random() < 0.005) {
+                // Mudar gradualmente a direção do vento
+                const targetDirection = Math.random() * Math.PI * 2;
+                const currentDirection = GAME.windDirection;
+                
+                // Interpolar suavemente entre a direção atual e a alvo
+                const angleDiff = ((targetDirection - currentDirection + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                GAME.windDirection += angleDiff * 0.1; // Mudar 10% em direção ao alvo
+                
+                // Normalizar ângulo
+                GAME.windDirection = (GAME.windDirection + Math.PI * 2) % (Math.PI * 2);
+            }
+            
+            // Variar a intensidade do vento
+            if (Math.random() < 0.02) {
+                // Variar a velocidade com picos e vales
+                const targetSpeed = 0.2 + Math.random() * 1.2; // Velocidades entre 0.2 e 1.4
+                GAME.windSpeed += (targetSpeed - GAME.windSpeed) * 0.1; // Transição suave
+            }
+            
+            // Criar partículas de vento para visualização
+            createWindParticles();
+            
+            // Atualizar partículas de vento existentes
+            updateWindParticles();
+        }
+        
+        // Criar partículas para mostrar visualmente o vento
+        function createWindParticles() {
+            // Adicionar partículas com base na velocidade do vento
+            const particleCount = Math.floor(GAME.windSpeed * 2);
+            
+            for (let i = 0; i < particleCount; i++) {
+                if (GAME.windParticles.length < GAME.maxWindParticles) {
+                    // Posição aleatória na borda da tela contra a direção do vento
+                    let x, y;
+                    const windAngle = GAME.windDirection;
+                    
+                    // Determinar ponto de spawn na borda oposta à direção do vento
+                    if (Math.cos(windAngle) > 0) {
+                        x = 0; // Vento vindo da esquerda
+                    } else {
+                        x = canvas.width; // Vento vindo da direita
+                    }
+                    
+                    if (Math.sin(windAngle) > 0) {
+                        y = 0; // Vento vindo de cima
+                    } else {
+                        y = canvas.height; // Vento vindo de baixo
+                    }
+                    
+                    // Adicionar ruído à posição de spawn
+                    x += (Math.random() - 0.5) * canvas.width;
+                    y += (Math.random() - 0.5) * canvas.height;
+                    
+                    // Criar partícula
+                    const particle = {
+                        x: x,
+                        y: y,
+                        size: 1 + Math.random() * 3, // Tamanho da partícula
+                        speed: 0.5 + GAME.windSpeed * (1 + Math.random()),
+                        alpha: 0.1 + Math.random() * 0.5,
+                        life: 100 + Math.random() * 200
+                    };
+                    
+                    GAME.windParticles.push(particle);
+                }
+            }
+        }
+        
+        // Atualizar e desenhar partículas de vento
+        function updateWindParticles() {
+            // Canvas de fundo para partículas
+            ctx.save();
+            
+            // Para cada partícula
+            for (let i = GAME.windParticles.length - 1; i >= 0; i--) {
+                const p = GAME.windParticles[i];
+                
+                // Mover a partícula
+                p.x += Math.cos(GAME.windDirection) * p.speed;
+                p.y += Math.sin(GAME.windDirection) * p.speed;
+                
+                // Reduzir vida
+                p.life -= 1 + p.speed * 0.5;
+                
+                // Desenhar partícula
+                ctx.fillStyle = `rgba(255, 255, 255, ${p.alpha * (p.life / 300)})`;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Criar linha para visualizar o vento
+                if (Math.random() < 0.2) {
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${p.alpha * 0.5 * (p.life / 300)})`;
+                    ctx.lineWidth = p.size * 0.5;
+                    ctx.beginPath();
+                    ctx.moveTo(p.x, p.y);
+                    ctx.lineTo(
+                        p.x - Math.cos(GAME.windDirection) * (5 + GAME.windSpeed * 5),
+                        p.y - Math.sin(GAME.windDirection) * (5 + GAME.windSpeed * 5)
+                    );
+                    ctx.stroke();
+                }
+                
+                // Remover se vida acabou ou saiu da tela
+                if (p.life <= 0 || 
+                    p.x < -20 || p.x > canvas.width + 20 || 
+                    p.y < -20 || p.y > canvas.height + 20) {
+                    GAME.windParticles.splice(i, 1);
+                }
+            }
+            
+            ctx.restore();
+        }
+
+        // Loop principal do jogo
+        function gameLoop() {
+            if (!GAME.running) return;
+            
+            // Limpar o canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Atualizar e desenhar nuvens (em primeiro lugar para ficarem no fundo)
+            updateAndDrawClouds();
+            
+            // Atualizar vento
+            updateWind();
+            
+            // Desenhar indicador de vento no canto superior direito
+            drawWindIndicator();
+            
+            // Atualizar movimento do jogador baseado nas teclas pressionadas
+            const playerPipa = GAME.pipas.find(p => p.isPlayer);
+            if (playerPipa && playerPipa.isAlive) {
+                // Redefinir aceleração em vez de posição para física mais suave
+                const acceleration = playerPipa.speed * 0.15;
+                
+                // Suporte para setas E teclas WASD (maiúsculas e minúsculas)
+                if (keys['ArrowLeft'] || keys['a'] || keys['A']) playerPipa.moveX -= acceleration;
+                if (keys['ArrowRight'] || keys['d'] || keys['D']) playerPipa.moveX += acceleration;
+                if (keys['ArrowUp'] || keys['w'] || keys['W']) playerPipa.moveY -= acceleration;
+                if (keys['ArrowDown'] || keys['s'] || keys['S']) playerPipa.moveY += acceleration;
+                
+                // Limitar velocidade máxima
+                const maxSpeed = playerPipa.speed;
+                const speed = Math.sqrt(playerPipa.moveX * playerPipa.moveX + playerPipa.moveY * playerPipa.moveY);
+                if (speed > maxSpeed) {
+                    playerPipa.moveX = (playerPipa.moveX / speed) * maxSpeed;
+                    playerPipa.moveY = (playerPipa.moveY / speed) * maxSpeed;
+                }
+            }
+            
+            // Atualizar movimento das pipas AI
+            updateAIPipas();
+            
+            // Atualizar todas as pipas
+            GAME.pipas.forEach(pipa => {
+                pipa.update();
+                pipa.draw();
+            });
+            
+            // Verificar vitória (se todas as outras pipas foram derrubadas)
+            const alivePipas = GAME.pipas.filter(p => p.isAlive);
+            if (alivePipas.length === 1 && alivePipas[0].isPlayer && !GAME.gameEnding) {
+                GAME.gameEnding = true;
+                alert("Parabéns! Você ganhou o jogo!");
+                resetGame();
+                return;
+            }
+            
+            // Verificar derrota (se a pipa do jogador foi cortada)
+            const playerAlive = GAME.pipas.find(p => p.isPlayer && p.isAlive);
+            if (!playerAlive && !GAME.gameEnding) {
+                GAME.gameEnding = true;
+                setTimeout(() => {
+                    alert("Sua pipa foi cortada! Tente novamente.");
+                    resetGame();
+                }, 1000);
+                return;
+            }
+            
+            // Atualizar a lista de jogadores
+            updatePlayersList();
+            
+            // Continuar o loop do jogo
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Atualizar lista de jogadores
+        function updatePlayersList() {
+            let html = '<h3>Jogadores:</h3>';
+            
+            // Filtrar para mostrar apenas pipas vivas
+            const activePlayers = GAME.pipas.filter(p => p.isAlive).map(p => ({
+                id: p.id,
+                name: p.name,
+                color: p.color,
+                isPlayer: p.isPlayer
+            }));
+            
+            activePlayers.forEach(player => {
+                html += `<div style="color:${player.color}">${player.name} ${player.isPlayer ? '(Você)' : ''}</div>`;
+            });
+            
+            playersDisplay.innerHTML = html;
+        }
+
+        // Resetar o jogo
+        function resetGame() {
+            GAME.pipas = [];
+            GAME.score = 0;
+            GAME.gameEnding = false;
+            GAME.clouds = []; // Limpar nuvens
+            scoreDisplay.textContent = `Pipas cortadas: 0`;
+            startScreen.style.display = 'flex';
+            GAME.running = false;
+        }
+
+        // Iniciar o jogo
+        startButton.addEventListener('click', () => {
+            const playerName = nameInput.value.trim() || 'Jogador';
+            
+            // Esconder tela inicial
+            startScreen.style.display = 'none';
+            
+            // Criar pipa do jogador
+            createPlayerPipa(playerName);
+            
+            // Criar pipas controladas por AI
+            createAIPipas(5);
+            
+            // Criar nuvens iniciais
+            createInitialClouds();
+            
+            // Iniciar o jogo
+            GAME.running = true;
+            gameLoop();
+        });
+
+        // Desenhar indicador de direção e força do vento
+        function drawWindIndicator() {
+            const indicatorX = canvas.width - 80;
+            const indicatorY = 80;
+            const radius = 30;
+            
+            // Círculo de fundo
+            ctx.beginPath();
+            ctx.arc(indicatorX, indicatorY, radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fill();
+            
+            // Borda
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Linhas internas de referência
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 1;
+            
+            // Linhas cruzadas
+            ctx.beginPath();
+            ctx.moveTo(indicatorX - radius, indicatorY);
+            ctx.lineTo(indicatorX + radius, indicatorY);
+            ctx.moveTo(indicatorX, indicatorY - radius);
+            ctx.lineTo(indicatorX, indicatorY + radius);
+            ctx.stroke();
+            
+            // Indicador de direção do vento
+            const arrowLength = radius * (0.5 + GAME.windSpeed * 0.8);
+            const arrowWidth = 8;
+            
+            // Seta principal
+            ctx.beginPath();
+            ctx.moveTo(indicatorX, indicatorY);
+            ctx.lineTo(
+                indicatorX + Math.cos(GAME.windDirection) * arrowLength,
+                indicatorY + Math.sin(GAME.windDirection) * arrowLength
+            );
+            
+            // Cor baseada na intensidade do vento
+            const windIntensity = Math.min(1, GAME.windSpeed / 1.2);
+            ctx.strokeStyle = `rgba(255, ${255 * (1 - windIntensity)}, ${255 * (1 - windIntensity)}, 0.8)`;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Ponta da seta
+            const tipX = indicatorX + Math.cos(GAME.windDirection) * arrowLength;
+            const tipY = indicatorY + Math.sin(GAME.windDirection) * arrowLength;
+            
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(
+                tipX - Math.cos(GAME.windDirection + Math.PI/6) * arrowWidth,
+                tipY - Math.sin(GAME.windDirection + Math.PI/6) * arrowWidth
+            );
+            ctx.lineTo(
+                tipX - Math.cos(GAME.windDirection - Math.PI/6) * arrowWidth,
+                tipY - Math.sin(GAME.windDirection - Math.PI/6) * arrowWidth
+            );
+            ctx.closePath();
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.fill();
+            
+            // Texto indicando a força do vento
+            ctx.font = "12px Arial";
+            ctx.fillStyle = "white";
+            ctx.textAlign = "center";
+            ctx.fillText(`Vento: ${Math.round(GAME.windSpeed * 10)}`, indicatorX, indicatorY + radius + 20);
+        }
+        
+        // Criar uma nuvem
+        function createCloud(x = null, y = null) {
+            // Definir posições aleatórias se não fornecidas
+            if (x === null) {
+                // Se o vento está soprando da esquerda para direita, criar na esquerda
+                // Se o vento está soprando da direita para esquerda, criar na direita
+                if (Math.cos(GAME.windDirection) > 0) {
+                    x = -200; // Fora da tela à esquerda
+                } else {
+                    x = canvas.width + 200; // Fora da tela à direita
+                }
+            }
+            
+            if (y === null) {
+                // Altura aleatória, mas mais concentrada na parte superior da tela
+                y = Math.random() * (canvas.height * 0.6); 
+            }
+            
+            // Cria a nuvem com forma mais simples, semelhante à imagem de referência
+            const cloud = {
+                x: x,
+                y: y,
+                width: 120 + Math.random() * 180, // Largura entre 120 e 300
+                height: 60 + Math.random() * 80,  // Altura entre 60 e 140
+                speed: 0.15 + Math.random() * 0.25, // Velocidade base para nuvens
+                opacity: 0.85 + Math.random() * 0.15, // Opacidade mais alta para nuvens mais nítidas
+                seed: Math.random() * 1000, // Seed para forma da nuvem
+                verticalMovement: (Math.random() - 0.5) * 0.2 // Pequeno movimento vertical natural
+            };
+            
+            return cloud;
+        }
+        
+        // Criar nuvens iniciais
+        function createInitialClouds() {
+            GAME.clouds = [];
+            
+            // Criar nuvens distribuídas pela tela
+            for (let i = 0; i < GAME.maxClouds; i++) {
+                const x = Math.random() * (canvas.width + 400) - 200; // Incluir áreas fora da tela
+                const y = Math.random() * (canvas.height * 0.6); // Mais na parte superior
+                GAME.clouds.push(createCloud(x, y));
+            }
+        }
+        
+        // Atualizar e desenhar nuvens
+        function updateAndDrawClouds() {
+            // Adicionar mais nuvens se necessário
+            if (GAME.clouds.length < GAME.maxClouds && Math.random() < 0.01) {
+                GAME.clouds.push(createCloud());
+            }
+            
+            // Ordenar nuvens por altura para que as mais altas sejam desenhadas primeiro (no fundo)
+            GAME.clouds.sort((a, b) => a.y - b.y);
+            
+            // Para cada nuvem
+            for (let i = GAME.clouds.length - 1; i >= 0; i--) {
+                const cloud = GAME.clouds[i];
+                
+                // Mover a nuvem baseado na direção e velocidade do vento
+                const windFactor = GAME.windSpeed * 1.0; // Relação entre vento e movimento das nuvens
+                cloud.x += Math.cos(GAME.windDirection) * cloud.speed * windFactor;
+                
+                // Movimento vertical sutil baseado na propriedade da nuvem
+                cloud.y += cloud.verticalMovement * Math.sin(Date.now() * 0.0005 + cloud.seed) * 0.1;
+                
+                // Remover nuvens que saíram completamente da tela
+                if ((Math.cos(GAME.windDirection) > 0 && cloud.x > canvas.width + cloud.width) || 
+                    (Math.cos(GAME.windDirection) < 0 && cloud.x < -cloud.width)) {
+                    GAME.clouds.splice(i, 1);
+                    continue;
+                }
+                
+                // Desenhar a nuvem
+                drawCloud(cloud);
+            }
+        }
+        
+        // Desenhar uma nuvem
+        function drawCloud(cloud) {
+            ctx.save();
+            
+            // Cor branca para a nuvem
+            ctx.fillStyle = `rgba(255, 255, 255, ${cloud.opacity})`;
+            
+            // Número de pontos para o contorno base da nuvem
+            const numBasePoints = 12; // Mais pontos para melhor controle da forma
+            const points = [];
+            
+            // Centro da nuvem
+            const centerX = cloud.x + cloud.width/2;
+            const centerY = cloud.y + cloud.height/2;
+            
+            // Criar pontos para formar a nuvem no estilo da imagem de referência
+            // Com base mais plana e topo com algumas curvas suaves
+            
+            // Ponto mais à esquerda (início)
+            points.push({
+                x: cloud.x + cloud.width * 0.1,
+                y: centerY + cloud.height * 0.1
+            });
+            
+            // Pontos do fundo (mais plano/suave)
+            points.push({
+                x: cloud.x + cloud.width * 0.25,
+                y: centerY + cloud.height * 0.25
+            });
+            
+            points.push({
+                x: cloud.x + cloud.width * 0.5,
+                y: centerY + cloud.height * 0.2
+            });
+            
+            points.push({
+                x: cloud.x + cloud.width * 0.75,
+                y: centerY + cloud.height * 0.22
+            });
+            
+            // Ponto mais à direita
+            points.push({
+                x: cloud.x + cloud.width * 0.9,
+                y: centerY + cloud.height * 0.1
+            });
+            
+            // Pontos superiores (com curvas/ondulações como na imagem)
+            // Lateral direita superior
+            points.push({
+                x: cloud.x + cloud.width * 0.85,
+                y: centerY - cloud.height * 0.2
+            });
+            
+            // Primeira ondulação
+            points.push({
+                x: cloud.x + cloud.width * 0.75,
+                y: centerY - cloud.height * 0.35
+            });
+            
+            // Segunda ondulação (pequena, como na imagem)
+            points.push({
+                x: cloud.x + cloud.width * 0.65,
+                y: centerY - cloud.height * 0.25
+            });
+            
+            // Ondulação central
+            points.push({
+                x: cloud.x + cloud.width * 0.5,
+                y: centerY - cloud.height * 0.4
+            });
+            
+            // Outra ondulação menor
+            points.push({
+                x: cloud.x + cloud.width * 0.35,
+                y: centerY - cloud.height * 0.3
+            });
+            
+            // Lateral esquerda superior
+            points.push({
+                x: cloud.x + cloud.width * 0.25,
+                y: centerY - cloud.height * 0.35
+            });
+            
+            // Retorno ao ponto inicial
+            points.push({
+                x: cloud.x + cloud.width * 0.15,
+                y: centerY - cloud.height * 0.15
+            });
+            
+            // Adicionar variação sutil para cada nuvem ter forma única
+            for (let i = 0; i < points.length; i++) {
+                // Pequena variação baseada na seed da nuvem
+                const variation = 0.15; // Quantidade de variação (15%)
+                points[i].x += (Math.sin(i * 0.7 + cloud.seed) * cloud.width * variation);
+                points[i].y += (Math.cos(i * 0.9 + cloud.seed) * cloud.height * variation);
+            }
+            
+            // Desenhar o caminho
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            
+            // Conectar os pontos com curvas de bezier
+            for (let i = 0; i < points.length; i++) {
+                const current = points[i];
+                const next = points[(i + 1) % points.length];
+                
+                // Calcular ponto de controle para curva suave
+                // Fator de tensão - ajustável para curvas mais ou menos acentuadas
+                const tension = 0.3;
+                
+                // Pontos antes e depois para calcular tangentes
+                const prev = points[(i - 1 + points.length) % points.length];
+                const nextNext = points[(i + 2) % points.length];
+                
+                // Calcular tangentes
+                const ctrlX1 = current.x + (next.x - prev.x) * tension;
+                const ctrlY1 = current.y + (next.y - prev.y) * tension;
+                
+                const ctrlX2 = next.x - (nextNext.x - current.x) * tension;
+                const ctrlY2 = next.y - (nextNext.y - current.y) * tension;
+                
+                // Desenhar curva para o próximo ponto
+                ctx.bezierCurveTo(ctrlX1, ctrlY1, ctrlX2, ctrlY2, next.x, next.y);
+            }
+            
+            ctx.closePath();
+            ctx.fill();
+            
+            // Borda sutil para definição
+            ctx.strokeStyle = 'rgba(210, 210, 210, 0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            
+            ctx.restore();
+        }
+    </script>
+</body>
+</html>
